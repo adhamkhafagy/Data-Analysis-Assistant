@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+charts/
+.streamlit/secrets.toml
+*.csv
+*.xlsx
+*.db
+*.sqlite
+.DS_Store
