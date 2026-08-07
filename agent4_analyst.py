@@ -33,7 +33,10 @@ SAFE_BUILTINS = {
 }
 
 # Only these modules can be imported by generated code
-ALLOWED_MODULES = {"pandas", "numpy", "matplotlib", "scipy", "seaborn"}
+ALLOWED_MODULES = {
+    "pandas", "numpy", "matplotlib", "scipy", "seaborn",
+    "sklearn", "statsmodels",
+}
 
 
 # ---------- Sandbox: safe code execution ----------
@@ -98,6 +101,10 @@ write ONLY Python pandas/matplotlib code (no explanation, no markdown fences) th
 answers the user's request. The dataframe is already loaded as `df`.
 If a chart is relevant, create it with matplotlib (plt). Use print() for any
 numeric/text findings.
+
+You may ONLY import from these libraries: pandas (pd), numpy, matplotlib (plt),
+scipy, seaborn, sklearn, statsmodels. Do not import any other library — if the
+analysis doesn't strictly need one of these, use plain pandas/numpy instead.
 
 Schema: {schema}
 Sample rows: {sample}
