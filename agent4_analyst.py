@@ -33,7 +33,7 @@ SAFE_BUILTINS = {
 }
 
 # Only these modules can be imported by generated code
-ALLOWED_MODULES = {"pandas", "numpy", "matplotlib"}
+ALLOWED_MODULES = {"pandas", "numpy", "matplotlib", "scipy", "seaborn"}
 
 
 # ---------- Sandbox: safe code execution ----------
