@@ -10,3 +10,21 @@ charts/
 *.db
 *.sqlite
 .DS_Store
+
+# New web platform
+.env.*
+!.env.example
+!.env.*.example
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+.pnpm-store/
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/.mypy_cache/
+backend/.pytest_cache/
+backend/migration-check.db
+*.log

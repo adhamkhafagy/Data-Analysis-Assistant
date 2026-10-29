@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bi_platform
+      POSTGRES_USER: bi_platform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+    volumes:
+      - platform-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bi_platform -d bi_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://bi_platform:${POSTGRES_PASSWORD:-local-development-only}@db:5432/bi_platform
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+  migrate:
+    build: ./backend
+    command: ["alembic", "upgrade", "head"]
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://bi_platform:${POSTGRES_PASSWORD:-local-development-only}@db:5432/bi_platform
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --hostname 0.0.0.0"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+volumes:
+  platform-db:
+  frontend-node-modules:
