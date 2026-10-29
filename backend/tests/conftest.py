@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 os.environ["SESSION_SECRET"] = "test-only-secret-with-more-than-32-characters"
 os.environ["DATABASE_URL"] = "sqlite:///./ignored.db"
 os.environ["APP_ENV"] = "test"
+os.environ["DATA_SOURCE_ENCRYPTION_KEY"] = "F6XUchQdlEmSn9TumuNFv8HSnLjpfLDshyF8Du-KJ-A="
 
 from app.core.database import Base, get_db
 from app.main import app

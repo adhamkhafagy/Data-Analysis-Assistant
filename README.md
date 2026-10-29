@@ -90,6 +90,86 @@ npm install
 npm run build
 ```
 
+## Phase 2 — database discovery and business context
+
+The authenticated workspace page now includes a **Data sources** section. It supports creating, listing, editing, connection-testing, discovering metadata, refreshing, and removing PostgreSQL, MySQL, and Microsoft SQL Server sources. Creation stores settings only; a database is contacted only after the explicit Test connection, Discover schema, or Refresh action.
+
+The connector interface is in `backend/app/services/connectors/`. Discovery uses SQLAlchemy inspection for schemas, tables, columns, primary keys, and foreign keys. It excludes common system schemas, caps the inspected table and column counts, stores catalog-only approximate table row estimates where available, and never selects customer rows. Catalog estimates may be absent or stale; column-level distributions and value samples are intentionally not collected. Discovery runs synchronously with process-local concurrency limits, so it is intended for small and medium schemas; a durable job queue is not included.
+
+An optional Groq provider receives only bounded schema names, column names/types, key relationships, and safe metadata. It never receives credentials or customer records. Profiles are validated suggestions with confidence/uncertainty fields; they are never executed as SQL. Missing Groq configuration leaves schema discovery available and reports that a profile could not be generated.
+
+### Phase 2 configuration and run steps (Windows PowerShell)
+
+Prepare ignored local configuration files and generate the two independent secrets:
+
+```powershell
+Copy-Item backend\.env.example backend\.env
+Copy-Item frontend\.env.example frontend\.env.local
+py -3.12 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Put the first generated value in `DATA_SOURCE_ENCRYPTION_KEY` and the second in `SESSION_SECRET` in `backend\.env`. Never use the session secret as the Fernet key. Set `GROQ_API_KEY` in this backend-only file if AI profiles are wanted; `AI_PROVIDER=groq` and `GROQ_MODEL` select the provider and model. Secrets must not be placed in `NEXT_PUBLIC_*` variables. The backend fails at startup if its Fernet key is missing or invalid.
+
+Run the services with Docker Desktop:
+
+```powershell
+$env:POSTGRES_PASSWORD = "use-a-private-local-password"
+# Use the same password in DATABASE_URL in backend\.env if you change the Compose default.
+docker compose up --build
+```
+
+PostgreSQL is only on the internal Compose network and is not published to the host. The persistent named volume is preserved across normal restarts. Existing migrations run in order; no reset or automatic schema creation is performed.
+
+For individual development, run PostgreSQL 16 and configure `DATABASE_URL`, then in one terminal:
+
+```powershell
+cd backend
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --reload
+```
+
+In another terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+For local databases reached from the backend, set `DATA_SOURCE_ALLOW_PRIVATE_NETWORKS=true`; enable `DATA_SOURCE_ALLOW_LOCALHOST=true` only when the backend itself can reach that loopback database. When the backend is in Docker, `localhost` means the backend container. A database on the Windows host may be reached using `host.docker.internal` only if it is listening on an interface reachable from Docker and the local development policy allows that destination. Do not expose a database port to the public internet as a workaround. A hosted SaaS backend cannot reach an arbitrary customer's computer-local database; a customer-controlled agent or secure tunnel is future work.
+
+For hosted deployment, set `APP_ENV=production`, `COOKIE_SECURE=true`, HTTPS, a strict `FRONTEND_ORIGIN`, and administrator-managed `DATA_SOURCE_ALLOWED_HOSTS`/`DATA_SOURCE_ALLOWED_CIDRS`. Hosted connection destinations must be literal IP addresses and match the administrator allowlist; hostnames are rejected in hosted mode to avoid DNS rebinding between validation and connection. Loopback, link-local, metadata, multicast, reserved and unspecified addresses are blocked. Network policy at the application layer does not replace outbound firewall or cloud egress rules. Use least-privilege read-only database accounts, TLS certificates matching the approved IP, firewall restrictions, and platform-level egress controls. Production requires `DATA_SOURCE_TLS_MODE=verify-full`; development may choose `require` or `disable` only for isolated local testing. The SQL Server adapter uses Microsoft ODBC Driver 18; the backend container installs it. On Windows, install that driver separately.
+
+Important backend settings:
+
+- `DATABASE_URL`, `SESSION_SECRET`, `DATA_SOURCE_ENCRYPTION_KEY`, `FRONTEND_ORIGIN`, `APP_ENV`, `COOKIE_SECURE`
+- `DATA_SOURCE_ALLOWED_HOSTS`, `DATA_SOURCE_ALLOWED_CIDRS`, `DATA_SOURCE_ALLOW_PRIVATE_NETWORKS`, `DATA_SOURCE_ALLOW_LOCALHOST`
+- `DATA_SOURCE_CONNECT_TIMEOUT_SECONDS`, `DATA_SOURCE_QUERY_TIMEOUT_SECONDS`, `DATA_SOURCE_TLS_MODE`, `DATA_SOURCE_MAX_TABLES`, `DATA_SOURCE_MAX_COLUMNS`, `DATA_SOURCE_MAX_CONCURRENT_JOBS`
+- `AI_PROVIDER`, `GROQ_API_KEY`, `GROQ_MODEL`
+
+Generate a new encryption key with the Fernet command above. Credentials encrypted with an old key cannot be decrypted after replacing it. Rotation is not implemented: before rotating, export a protected backup, run a controlled one-off migration that decrypts each credential using the old key and re-encrypts it with the new key, verify counts and sample round trips, then atomically deploy the new key. Keep old-key backups in a secure secret store until verification and rollback windows close; never put keys or plaintext passwords in logs or source control.
+
+Create a source from an owned workspace page, test it, then explicitly discover the schema. Inspect the discovered inventory and optional profile there. If a connection fails, check host reachability from the backend, inbound firewall rules, read-only permissions, TLS certificate trust, the Windows ODBC Driver 18 for SQL Server, and the sanitized API status. The backend does not expose driver messages or credential-bearing URLs.
+
+Phase 2 endpoints are `POST /api/v1/workspaces/{workspace_id}/data-sources`, `GET /api/v1/workspaces/{workspace_id}/data-sources`, `GET|PATCH|DELETE /api/v1/data-sources/{id}`, `POST /api/v1/data-sources/{id}/test-connection`, `POST /api/v1/data-sources/{id}/discover`, `GET /api/v1/data-sources/{id}/schema`, `GET /api/v1/data-sources/{id}/business-profile`, and `POST /api/v1/data-sources/{id}/refresh`. All require the existing browser session and ownership is checked against the source's workspace.
+
+The additional migration `0002_data_sources` follows the Phase 1 baseline `0001_initial`, adds sources and discovered metadata, and cascades only when an owning workspace/source is deliberately deleted. Never edit applied migrations or reset the platform database to install this phase.
+
+Phase 2 tests use temporary SQLite databases and a mock connector. The metadata discovery unit test uses SQLite inspection and proves that it does not fetch inserted row contents. They do not require a live PostgreSQL, MySQL, SQL Server, or Groq account. Run:
+
+```powershell
+cd backend
+$env:SESSION_SECRET = "test-session-secret-long-enough-for-tests"
+$env:DATA_SOURCE_ENCRYPTION_KEY = (py -3.12 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+pytest -p no:cacheprovider
+```
+
+Frontend checks are `npm run lint`, `npx tsc --noEmit`, and `npm run build` from `frontend`. Phase 3 dashboards and Phase 4 persistent AI chat/dashboard editing remain deferred.
+
 ## Phase 1 scope and security notes
 
 Dashboards, data-source connections, and the AI analyst are labeled placeholders. No customer database is contacted and no analytics are fabricated. Production deployment still requires HTTPS, a real secret manager, auth rate limiting, monitoring, backup/restore, a reviewed CSRF strategy for the chosen domain topology, and security review. Social login, email verification, password reset, billing, database discovery, NL-to-SQL, persistent AI chat, and dynamic dashboards are later-phase work.
