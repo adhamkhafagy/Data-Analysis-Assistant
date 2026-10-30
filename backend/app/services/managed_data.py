@@ -430,8 +430,12 @@ def read_dataset_rows(db: Session, dataset: Dataset, workspace_id: int, limit: i
 def update_dataset_row(db: Session, dataset: Dataset, workspace_id: int, row_id: str, values: dict[str, Any]) -> None:
     table = managed_table(dataset)
     specs = {spec["name"]: spec for spec in dataset.schema_json}
-    if not values or set(values) - set(specs):
-        raise HTTPException(422, "Provide valid dataset column names")
+    if not values:
+        raise HTTPException(422, "values must contain at least one column")
+    unknown_columns = set(values) - set(specs)
+    if unknown_columns:
+        names = sorted(str(name)[:64] for name in unknown_columns)[:10]
+        raise HTTPException(422, f"Unknown columns: {', '.join(names)}")
     mapped = {}
     for name, value in values.items():
         try: mapped[specs[name]["key"]] = coerce_value(value, specs[name]["type"], specs[name]["nullable"])
