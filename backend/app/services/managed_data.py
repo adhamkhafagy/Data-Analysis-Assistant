@@ -314,18 +314,69 @@ def read_records(session: UploadSession, sheet_name: str | None = None) -> tuple
 
 def infer_type(values: list[Any]) -> str:
     values = [value for value in values if value not in (None, "")]
-    if not values: return "text"
-    if all(isinstance(value, datetime) for value in values): return "datetime"
-    if all(isinstance(value, date) and not isinstance(value, datetime) for value in values): return "date"
-    try:
-        for value in values: int(value)
+    if not values:
+        return "text"
+    if all(isinstance(value, datetime) for value in values):
+        return "datetime"
+    if all(isinstance(value, date) and not isinstance(value, datetime) for value in values):
+        return "date"
+    if all(isinstance(value, bool) for value in values):
+        return "boolean"
+
+    def is_integer(value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        if isinstance(value, float):
+            return value.is_integer()
+        return isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()) is not None
+
+    if all(is_integer(value) for value in values):
         return "integer"
-    except (ValueError, TypeError): pass
-    try:
-        for value in values: Decimal(str(value))
+
+    def is_decimal(value: Any) -> bool:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return False
+        try:
+            return Decimal(str(value)).is_finite()
+        except (InvalidOperation, ValueError, TypeError):
+            return False
+
+    if all(is_decimal(value) for value in values):
         return "decimal"
-    except (InvalidOperation, ValueError, TypeError): pass
-    if all(isinstance(value, bool) or str(value).casefold() in {"true", "false", "yes", "no"} for value in values): return "boolean"
+    if all(isinstance(value, str) and value.casefold() in {"true", "false", "yes", "no"} for value in values):
+        return "boolean"
+
+    def is_valid_date(value: str) -> bool:
+        try:
+            date.fromisoformat(value)
+            return True
+        except ValueError:
+            return False
+
+    if all(
+        isinstance(value, str)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is not None
+        and is_valid_date(value)
+        for value in values
+    ):
+        return "date"
+
+    def is_valid_datetime(value: str) -> bool:
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return True
+        except ValueError:
+            return False
+
+    if all(
+        isinstance(value, str)
+        and re.match(r"^\d{4}-\d{2}-\d{2}[T ]", value) is not None
+        and is_valid_datetime(value)
+        for value in values
+    ):
+        return "datetime"
     return "text"
 
 
@@ -399,7 +450,7 @@ def import_upload(db: Session, session: UploadSession, user_id: int, name: str |
             raise HTTPException(404, "Dataset not found")
         if dataset.source_type == "database" or not append:
             raise HTTPException(409, "This dataset cannot be appended to")
-        if [{k: c[k] for k in ("name", "type")} for k in schema] != [{k: c[k] for k in ("name", "type")} for c in dataset.schema_json]:
+        if [{k: c[k] for k in ("name", "type")} for c in schema] != [{k: c[k] for k in ("name", "type")} for c in dataset.schema_json]:
             raise HTTPException(422, "Imported columns must match the dataset schema in order")
     try:
         insert_rows(db, dataset, session.workspace_id, rows)
