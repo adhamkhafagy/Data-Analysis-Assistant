@@ -16,6 +16,7 @@ from typing import Any
 import openpyxl
 import xlrd
 from fastapi import HTTPException, UploadFile
+from openpyxl.styles.numbers import is_datetime as excel_number_format_type
 from sqlalchemy import Boolean, Column, Date, DateTime, Integer, JSON, MetaData, Numeric, String, Table, inspect, insert, select, update, delete, func
 from sqlalchemy.orm import Session
 
@@ -152,6 +153,18 @@ def staging_path(key: str) -> Path:
     return path
 
 
+def validate_xlsx_archive(path: Path, max_bytes: int) -> None:
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        if len(infos) > 2000 or sum(item.file_size for item in infos) > max_bytes * 20:
+            raise HTTPException(413, "Excel file expands beyond the allowed limit")
+        if any(
+            item.filename.replace("\\", "/").rsplit("/", 1)[-1].casefold() == "vbaproject.bin"
+            for item in infos
+        ):
+            raise HTTPException(415, "Macro-enabled workbooks are not supported")
+
+
 async def save_upload(db: Session, workspace_id: int, user_id: int, upload: UploadFile) -> UploadSession:
     workspace_for_user(db, workspace_id, user_id)
     filename = safe_filename(upload.filename)
@@ -179,15 +192,13 @@ async def save_upload(db: Session, workspace_id: int, user_id: int, upload: Uplo
             raise HTTPException(422, "The uploaded file is empty")
         sheets = []
         if file_type == "xlsx":
-            with zipfile.ZipFile(path) as archive:
-                infos = archive.infolist()
-                if len(infos) > 2000 or sum(item.file_size for item in infos) > settings.upload_max_bytes * 20:
-                    raise HTTPException(413, "Excel file expands beyond the allowed limit")
-                if any(item.filename.lower().endswith("vba_project.bin") for item in infos):
-                    raise HTTPException(415, "Macro-enabled workbooks are not supported")
-            book = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            sheets = book.sheetnames
-            book.close()
+            validate_xlsx_archive(path, settings.upload_max_bytes)
+            with path.open("rb") as source:
+                book = openpyxl.load_workbook(source, read_only=True, data_only=True)
+                try:
+                    sheets = book.sheetnames
+                finally:
+                    book.close()
         elif file_type == "xls":
             book = xlrd.open_workbook(path, on_demand=True)
             sheets = book.sheet_names()
@@ -254,24 +265,35 @@ def read_records(session: UploadSession, sheet_name: str | None = None) -> tuple
                 headers = list(dict.fromkeys(key for row in parsed for key in row.keys()))
                 rows = [{key: row.get(key) for key in headers} for row in parsed]
         elif session.file_type == "xlsx":
-            book = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            if sheet_name not in book.sheetnames:
-                book.close()
-                raise HTTPException(422, "Select a valid worksheet")
-            sheet = book[sheet_name]
-            values = sheet.iter_rows(values_only=True)
-            first = next(values, None)
-            headers = [str(value).strip() if value is not None else "" for value in (first or ())]
-            if len(headers) > settings.upload_max_columns:
-                book.close()
-                raise HTTPException(413, "File exceeds the configured column limit")
-            rows = []
-            for row in values:
-                if len(rows) >= settings.upload_max_rows:
+            validate_xlsx_archive(path, settings.upload_max_bytes)
+            with path.open("rb") as source:
+                book = openpyxl.load_workbook(source, read_only=True, data_only=True)
+                try:
+                    if sheet_name not in book.sheetnames:
+                        raise HTTPException(422, "Select a valid worksheet")
+                    sheet = book[sheet_name]
+                    values = sheet.iter_rows()
+                    first = next(values, None)
+                    headers = [str(cell.value).strip() if cell.value is not None else "" for cell in (first or ())]
+                    if len(headers) > settings.upload_max_columns:
+                        raise HTTPException(413, "File exceeds the configured column limit")
+                    rows = []
+                    for row in values:
+                        if len(rows) >= settings.upload_max_rows:
+                            raise HTTPException(413, "File exceeds the configured row limit")
+                        row_values = []
+                        for cell in row:
+                            value = cell.value
+                            if (
+                                isinstance(value, datetime)
+                                and cell.is_date
+                                and excel_number_format_type(cell.number_format) == "date"
+                            ):
+                                value = value.date()
+                            row_values.append(value)
+                        rows.append(dict(zip(headers, row_values)))
+                finally:
                     book.close()
-                    raise HTTPException(413, "File exceeds the configured row limit")
-                rows.append(dict(zip(headers, row)))
-            book.close()
         else:
             book = xlrd.open_workbook(path, on_demand=True)
             if sheet_name not in book.sheet_names():

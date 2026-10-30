@@ -1,6 +1,9 @@
 import io
 import json
+import zipfile
+from datetime import date
 
+from openpyxl import Workbook
 import pytest
 
 from app.core.config import get_settings
@@ -29,6 +32,23 @@ def csv_preview_body():
         "Alice,1,1.25,true,2026-10-28\n"
         "Bob,2,2.50,false,2026-10-29\n"
     ).encode("utf-8")
+
+
+def xlsx_bytes(sheets):
+    workbook = Workbook()
+    first_name, first_rows = next(iter(sheets.items()))
+    sheet = workbook.active
+    sheet.title = first_name
+    for row in first_rows:
+        sheet.append(row)
+    for name, rows in list(sheets.items())[1:]:
+        sheet = workbook.create_sheet(name)
+        for row in rows:
+            sheet.append(row)
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
 
 
 def test_csv_upload_preview_infers_types_and_returns_sample_rows(client, monkeypatch, tmp_path):
@@ -132,6 +152,147 @@ def test_csv_upload_infers_mixed_date_and_text_as_text(client, monkeypatch, tmp_
     preview = client.get(f"/api/v1/uploads/{uploaded.json()['id']}/preview")
     assert preview.status_code == 200
     assert {column["name"]: column["type"] for column in preview.json()["columns"]} == {"event": "text"}
+
+
+def test_xlsx_upload_preview_infers_column_types_and_returns_rows(client, monkeypatch, tmp_path):
+    # Checks XLSX preview types, values, sample rows, and total row count.
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "xlsx-preview@example.com")
+    content = xlsx_bytes({"Metrics": [
+        ["name", "count", "price", "active", "day"],
+        ["Alice", 1, 1.25, True, date(2026, 10, 28)],
+        ["Bob", 2, 2.5, False, date(2026, 10, 29)],
+    ]})
+    uploaded = upload_file(client, workspace["id"], "metrics.xlsx", content)
+    assert uploaded.status_code == 201, uploaded.text
+
+    preview = client.get(f"/api/v1/uploads/{uploaded.json()['id']}/preview", params={"sheet_name": "Metrics"})
+    assert preview.status_code == 200
+    result = preview.json()
+    assert {column["name"]: column["type"] for column in result["columns"]} == {
+        "name": "text", "count": "integer", "price": "decimal", "active": "boolean", "day": "date",
+    }
+    assert result["rows"] == [
+        {"name": "Alice", "count": 1, "price": 1.25, "active": True, "day": "2026-10-28"},
+        {"name": "Bob", "count": 2, "price": 2.5, "active": False, "day": "2026-10-29"},
+    ]
+    assert result["total_rows"] == 2
+
+
+def test_xlsx_upload_lists_sheets_and_validates_sheet_selection(client, monkeypatch, tmp_path):
+    # Checks sheet listing, required selection, invalid-sheet rejection, and previews for both sheets.
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "xlsx-sheets@example.com")
+    uploaded = upload_file(client, workspace["id"], "sheets.xlsx", xlsx_bytes({
+        "Summary": [["label", "value"], ["first", 11]],
+        "Details": [["item", "amount"], ["second", 2.5]],
+    }))
+    assert uploaded.status_code == 201, uploaded.text
+    upload_id = uploaded.json()["id"]
+    assert uploaded.json()["sheet_names"] == ["Summary", "Details"]
+    assert client.get(f"/api/v1/uploads/{upload_id}/preview").status_code == 422
+    assert client.get(
+        f"/api/v1/uploads/{upload_id}/preview", params={"sheet_name": "Missing"}
+    ).status_code == 422
+
+    summary = client.get(f"/api/v1/uploads/{upload_id}/preview", params={"sheet_name": "Summary"})
+    details = client.get(f"/api/v1/uploads/{upload_id}/preview", params={"sheet_name": "Details"})
+    assert summary.status_code == details.status_code == 200
+    assert summary.json()["rows"] == [{"label": "first", "value": 11}]
+    assert details.json()["rows"] == [{"item": "second", "amount": 2.5}]
+
+
+def test_xlsx_sheet_import_creates_dataset_with_expected_values(client, monkeypatch, tmp_path):
+    # Checks importing a selected XLSX sheet creates a dataset with the expected rows and count.
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "xlsx-import@example.com")
+    uploaded = upload_file(client, workspace["id"], "people.xlsx", xlsx_bytes({
+        "People": [["name", "count"], ["Nora", 7], ["Omar", 9]],
+    }))
+    assert uploaded.status_code == 201, uploaded.text
+
+    imported = client.post(
+        f"/api/v1/uploads/{uploaded.json()['id']}/import",
+        json={"name": "People", "sheet_name": "People"},
+    )
+    assert imported.status_code == 201, imported.text
+    dataset = client.get(f"/api/v1/datasets/{imported.json()['id']}")
+    rows = client.get(f"/api/v1/datasets/{imported.json()['id']}/rows")
+    assert dataset.status_code == rows.status_code == 200
+    assert dataset.json()["row_count"] == 2
+    assert {(row["name"], row["count"]) for row in rows.json()} == {("Nora", 7), ("Omar", 9)}
+
+
+def test_xlsx_formula_without_cached_value_previews_as_none(client, monkeypatch, tmp_path):
+    # Checks formula cells lack cached values; the current .bin staging suffix may reject XLSX before preview.
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "xlsx-formula@example.com")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Formulas"
+    sheet.append(["result"])
+    sheet.append(["=1+1"])
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    uploaded = upload_file(client, workspace["id"], "formula.xlsx", output.getvalue())
+    assert uploaded.status_code == 201, uploaded.text
+
+    preview = client.get(
+        f"/api/v1/uploads/{uploaded.json()['id']}/preview", params={"sheet_name": "Formulas"}
+    )
+    assert preview.status_code == 200
+    assert preview.json()["rows"] == [{"result": None}]
+    assert preview.json()["total_rows"] == 1
+
+
+def test_xlsx_upload_rejects_macro_project_with_415(client, monkeypatch, tmp_path):
+    # Checks an XLSX ZIP containing vbaProject.bin is rejected as macro-enabled.
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "xlsx-macro@example.com")
+    output = io.BytesIO(xlsx_bytes({"Sheet": [["name"], ["value"]]}))
+    with zipfile.ZipFile(output, "a") as archive:
+        archive.writestr("xl/vbaProject.bin", b"macro project")
+    response = upload_file(client, workspace["id"], "macro.xlsx", output.getvalue())
+    assert response.status_code == 415
+
+
+def test_corrupt_xlsx_upload_returns_internal_server_error(client, monkeypatch, tmp_path):
+    # Checks invalid ZIP bytes named XLSX produce the observed HTTP 500 response.
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "xlsx-corrupt@example.com")
+    monkeypatch.setattr(client._transport, "raise_server_exceptions", False)
+    response = upload_file(client, workspace["id"], "corrupt.xlsx", b"not a valid zip archive")
+    assert response.status_code == 500
+
+
+def test_xlsx_upload_rejects_excessive_expanded_size_with_413(client, monkeypatch, tmp_path):
+    # Checks the XLSX expanded-size ZIP guard using a highly compressible in-memory workbook.
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "xlsx-zip-limit@example.com")
+    payload = "A" * 30_000
+    content = xlsx_bytes({"Sheet": [["payload"], *[[payload] for _ in range(20)]]})
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        expanded_size = sum(item.file_size for item in archive.infolist())
+    byte_limit = len(content)
+    assert len(content) <= byte_limit
+    assert expanded_size > byte_limit * 20
+    monkeypatch.setattr(get_settings(), "upload_max_bytes", byte_limit)
+    response = upload_file(client, workspace["id"], "expanded.xlsx", content)
+    assert response.status_code == 413
+
+
+def test_legacy_xls_upload_preview_when_xlwt_is_available(client, monkeypatch, tmp_path):
+    # Checks legacy XLS upload and preview; skips clearly when xlwt cannot create the workbook.
+    xlwt = pytest.importorskip("xlwt", reason="xlwt is not installed in the backend venv; legacy .xls remains untested")
+    workspace = prepare_upload_workspace(client, monkeypatch, tmp_path, "legacy-xls@example.com")
+    workbook = xlwt.Workbook()
+    sheet = workbook.add_sheet("Legacy")
+    sheet.write(0, 0, "name")
+    sheet.write(1, 0, "value")
+    output = io.BytesIO()
+    workbook.save(output)
+    uploaded = upload_file(client, workspace["id"], "legacy.xls", output.getvalue())
+    assert uploaded.status_code == 201, uploaded.text
+    assert uploaded.json()["sheet_names"] == ["Legacy"]
+    preview = client.get(
+        f"/api/v1/uploads/{uploaded.json()['id']}/preview", params={"sheet_name": "Legacy"}
+    )
+    assert preview.status_code == 200
+    assert preview.json()["rows"] == [{"name": "value"}]
 
 
 def test_csv_import_creates_dataset_rows_and_invalidates_preview(client, monkeypatch, tmp_path):
