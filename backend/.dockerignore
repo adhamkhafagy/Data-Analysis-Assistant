@@ -10,5 +10,8 @@ __pycache__/
 .ruff_cache/
 test-tmp*/
 diag-tmp/
+.uploads/
 *.db
 *.sqlite
+pytest-cache-files-*/
+.pytest-tmp/

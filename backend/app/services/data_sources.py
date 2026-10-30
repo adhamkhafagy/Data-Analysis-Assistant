@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import threading
 from datetime import datetime, timezone
 
@@ -10,6 +11,7 @@ from app.core.crypto import CredentialCipher
 from app.models.data_source import DataSource
 from app.models.discovered_column import DiscoveredColumn
 from app.models.discovered_table import DiscoveredTable
+from app.models.dataset import Dataset
 from app.repositories.data_sources import owned, with_tables
 from app.repositories.workspaces import get_for_owner
 from app.schemas.data_source import DataSourceCreate, DataSourceUpdate
@@ -132,6 +134,33 @@ def discover_source(db: Session, source: DataSource) -> DataSource:
             table.columns = [DiscoveredColumn(**column) for column in record["columns"]]
             tables.append(table)
         source.tables = tables
+        db.flush()
+        catalog = db.query(Dataset).filter(Dataset.data_source_id == source.id).all()
+        by_identity = {(str((item.source_ref or {}).get("schema")), str((item.source_ref or {}).get("table"))): item for item in catalog}
+        for item in catalog:
+            item.status = "stale"
+        for table in tables:
+            identity = (table.schema_name, table.name)
+            schema_json = [{"name": column.name, "data_type": column.data_type, "type": "text",
+                            "nullable": column.nullable, "is_primary_key": column.is_primary_key,
+                            "foreign_key": column.foreign_key} for column in table.columns]
+            item = by_identity.get(identity)
+            if item is None:
+                identity = f"{table.schema_name}.{table.name}"
+                suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+                display_name = f"{source.id}:{identity[-140:]}:{suffix}"[:160]
+                if db.query(Dataset.id).filter(Dataset.workspace_id == source.workspace_id, Dataset.name == display_name).first():
+                    display_name = f"{source.id}:{identity[-132:]}:{table.id}:{suffix}"[:160]
+                item = Dataset(workspace_id=source.workspace_id, name=display_name, source_type="database",
+                               status="ready", schema_json=schema_json,
+                               row_count=table.row_count_estimate or 0, source_ref={"schema": table.schema_name, "table": table.name},
+                               data_source_id=source.id)
+                db.add(item)
+            else:
+                item.status = "ready"
+                item.schema_json = schema_json
+                item.row_count = table.row_count_estimate or 0
+            item.discovered_table_id = table.id
         source.discovery_status = "completed"
         source.last_discovered_at = datetime.now(timezone.utc)
         source.status = "connected"

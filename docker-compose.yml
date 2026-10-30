@@ -19,6 +19,7 @@ services:
     env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg://bi_platform:${POSTGRES_PASSWORD:-local-development-only}@db:5432/bi_platform
+      DATA_SOURCE_COMPOSE_DB_CIDR: ${DATA_SOURCE_COMPOSE_DB_CIDR:-172.16.0.0/12}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

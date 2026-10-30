@@ -1,5 +1,6 @@
 from functools import lru_cache
 import ipaddress
+from pathlib import Path
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +22,7 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     data_source_allowed_hosts: str = ""
     data_source_allowed_cidrs: str = ""
+    data_source_compose_db_cidr: str = ""
     data_source_allow_private_networks: bool = False
     data_source_allow_localhost: bool = False
     data_source_connect_timeout_seconds: int = Field(default=5, ge=1, le=15)
@@ -29,6 +31,11 @@ class Settings(BaseSettings):
     data_source_max_tables: int = Field(default=200, ge=1, le=1000)
     data_source_max_columns: int = Field(default=2000, ge=1, le=10000)
     data_source_max_concurrent_jobs: int = Field(default=4, ge=1, le=16)
+    upload_max_bytes: int = Field(default=25_000_000, ge=1024, le=100_000_000)
+    upload_max_rows: int = Field(default=50_000, ge=1, le=250_000)
+    upload_max_columns: int = Field(default=500, ge=1, le=2_000)
+    upload_preview_rows: int = Field(default=50, ge=1, le=200)
+    upload_staging_dir: str = str(Path(__file__).resolve().parents[2] / ".uploads")
 
     @model_validator(mode="after")
     def validate_security_settings(self):

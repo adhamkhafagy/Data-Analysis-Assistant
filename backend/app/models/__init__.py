@@ -3,5 +3,6 @@ from app.models.workspace import Workspace
 from app.models.data_source import DataSource
 from app.models.discovered_table import DiscoveredTable
 from app.models.discovered_column import DiscoveredColumn
+from app.models.dataset import Dataset, DatasetRevision, IngestionRun, UploadSession
 
-__all__ = ["User", "Workspace", "DataSource", "DiscoveredTable", "DiscoveredColumn"]
+__all__ = ["User", "Workspace", "DataSource", "DiscoveredTable", "DiscoveredColumn", "Dataset", "DatasetRevision", "IngestionRun", "UploadSession"]

@@ -180,6 +180,52 @@ def test_policy_blocks_loopback_by_default(monkeypatch):
             assert False, "Loopback must be blocked"
 
 
+def test_compose_db_allowed_only_for_exact_hostname_and_configured_network():
+    with patch("app.services.connectors.network_policy.get_settings") as settings, patch(
+        "app.services.connectors.network_policy.dns.resolver.Resolver"
+    ) as resolver_type:
+        settings.return_value = SimpleNamespace(
+            app_env="development", data_source_allowed_hosts="", data_source_allowed_cidrs="",
+            data_source_compose_db_cidr="172.20.0.0/16", data_source_allow_localhost=False,
+            data_source_allow_private_networks=False, data_source_connect_timeout_seconds=1,
+        )
+        resolver = resolver_type.return_value
+        resolver.resolve.return_value = [SimpleNamespace(address="172.20.0.5")]
+        assert validate_destination("db") == ["172.20.0.5"]
+        resolver.resolve.assert_any_call("db", "A", lifetime=1)
+
+
+def test_compose_db_exception_does_not_allow_other_private_or_public_hosts():
+    with patch("app.services.connectors.network_policy.get_settings") as settings, patch(
+        "app.services.connectors.network_policy.dns.resolver.Resolver"
+    ) as resolver_type:
+        settings.return_value = SimpleNamespace(
+            app_env="development", data_source_allowed_hosts="", data_source_allowed_cidrs="",
+            data_source_compose_db_cidr="172.20.0.0/16", data_source_allow_localhost=False,
+            data_source_allow_private_networks=False, data_source_connect_timeout_seconds=1,
+        )
+        def resolve(host, record_type, lifetime):
+            address = "172.20.0.6"
+            return [SimpleNamespace(address=address)] if record_type == "A" else []
+        resolver_type.return_value.resolve.side_effect = resolve
+        for host in ("db.evil.test", "other-db"):
+            try:
+                validate_destination(host)
+            except NetworkPolicyError:
+                continue
+            assert False, f"{host} must remain unauthorized"
+
+
+def test_public_destination_remains_subject_to_existing_development_policy():
+    with patch("app.services.connectors.network_policy.get_settings") as settings:
+        settings.return_value = SimpleNamespace(
+            app_env="development", data_source_allowed_hosts="", data_source_allowed_cidrs="",
+            data_source_compose_db_cidr="172.20.0.0/16", data_source_allow_localhost=False,
+            data_source_allow_private_networks=False, data_source_connect_timeout_seconds=1,
+        )
+        assert validate_destination("8.8.8.8") == ["8.8.8.8"]
+
+
 def test_metadata_discovery_uses_inspection_without_fetching_rows(tmp_path):
     database = tmp_path / "metadata.sqlite"
     engine = create_engine(f"sqlite:///{database}")

@@ -2,8 +2,10 @@ from fastapi import APIRouter, HTTPException, Response, status
 
 from app.api.deps import CurrentUser, DbSession
 from app.models.workspace import Workspace
+from app.models.dataset import Dataset, UploadSession
 from app.repositories.workspaces import get_for_owner, list_for_owner
 from app.schemas.workspace import WorkspaceCreate, WorkspaceResponse, WorkspaceUpdate
+from app.services.managed_data import managed_table, staging_path
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -46,6 +48,15 @@ def delete_workspace(workspace_id: int, user: CurrentUser, db: DbSession):
     workspace = get_for_owner(db, workspace_id, user.id)
     if not workspace:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found")
+    datasets = db.query(Dataset).filter(Dataset.workspace_id == workspace_id).all()
+    uploads = db.query(UploadSession).filter(UploadSession.workspace_id == workspace_id).all()
+    connection = db.connection()
+    for dataset in datasets:
+        if dataset.storage_table_key:
+            managed_table(dataset).drop(connection, checkfirst=True)
+    for upload in uploads:
+        if upload.staging_key:
+            staging_path(upload.staging_key).unlink(missing_ok=True)
     db.delete(workspace)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

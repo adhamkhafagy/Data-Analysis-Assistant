@@ -27,4 +27,7 @@ backend/.ruff_cache/
 backend/.mypy_cache/
 backend/.pytest_cache/
 backend/migration-check.db
+backend/.uploads/
 *.log
+backend/.pytest-tmp/
+.pytest-tmp/

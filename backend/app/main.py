@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, data_sources, workspaces
+from app.api import auth, data_sources, datasets, workspaces
 from app.core.config import get_settings
 
 
@@ -35,3 +35,4 @@ def health():
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(workspaces.router, prefix="/api/v1")
 app.include_router(data_sources.router, prefix="/api/v1")
+app.include_router(datasets.router, prefix="/api/v1")
